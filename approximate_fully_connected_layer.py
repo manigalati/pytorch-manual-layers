@@ -4,6 +4,8 @@ import cuda_layers
 import cpp_layers
 import pdb
 
+import math
+
 class linear_appx(torch.autograd.Function):
     @staticmethod
     def forward(ctx, X, weight, bias):
@@ -55,6 +57,13 @@ class MyLinear(nn.Module):
         self.out_features = out_features
         self.weight = torch.nn.Parameter(torch.randn(out_features, in_features))
         self.bias = torch.nn.Parameter(torch.randn(out_features))
+        self.init_weights()
+    
+    def init_weights(self):
+        stdv = 1. / math.sqrt(self.weight.size(1))
+        self.weight.data.uniform_(-stdv, stdv)
+        if self.bias is not None:
+            self.bias.data.uniform_(-stdv, stdv)
 
     def forward(self, x):
         x = self.fn(x, self.weight, self.bias)
