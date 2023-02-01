@@ -9,16 +9,16 @@ import math
 class linear_appx(torch.autograd.Function):
     @staticmethod
     def forward(ctx, X, weight, bias):
-        ctx.save_for_backward(X, weight, bias)
+        ctx.save_for_backward(*X, weight, bias)
 
-        (m, n) = X.shape
+        #(m, n) = X.shape
         (k, _) = weight.shape
-
-        if (X.is_cuda == True):
+        
+        if (X[0].is_cuda == True):
 
             # Must flatten the weights so CUDA sees them sequentially.
             weight = torch.transpose(weight, 0, 1).flatten()
-            out = cuda_layers.linear_forward(X, weight, bias, m, n, k)
+            out = cuda_layers.linear_forward(X, weight, bias, k)#m, n, k)
 
             return out
         else:
