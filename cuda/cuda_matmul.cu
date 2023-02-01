@@ -59,19 +59,31 @@ __global__ void my_matmul_cuda(
   float *output,
   const int l,
   const int m,
-  const int w,
   const int n,
+  const int *pixel_counts,
+  const int *feature_counts,
   const int k,
   const int batch_size)
 {
 
+  //CONVIENE CHE OGNI BLOCCO DI FEATURE SIA VISTO IN DUE DIMENSIONI OSSIA #PIXEL(BATCHxWIDTHxHEIGHT) E #FEATURES. ENTRAMBI QUESTI DUE VALORI CAMBIANO PER OGNI BLOCCO E VA
+  //TENUTA TRACCIA DELLE DIMENSIONI DI OGNI BLOCCO IN DUE VETTORI pixel_counts E feature_counts
+
     // This code doesn't really get much faster using shared memory, since
     // accesses to the image matrix are all sequential anyway. The first access
     // already caches everything, making shared memory useless.
-    int index = blockIdx.z * blockDim.z + threadIdx.z;
-    if( index < w){
-        int row = index / w;
-        int col = index % w;
+    //int img = blockIdx.z * blockDim.z + threadIdx.z;
+    int pixel = blockIdx.y * blockDim.y + threadIdx.y;
+    int col = blockIdx.x * blockDim.x + threadIdx.x;
+
+    float sum = 0.0f, product_appx = 0.0f, product = 0.0f;
+    if(col < k && pixel < m){
+      for(int i=0; i<l; i++){
+        for(int j = 0; j < feature_counts[i]; j++){
+          sum += image[i][((pixel*pixel_counts[i]/m) * pixel_counts[i] * feature_counts[i]) + j] * weight[j * k + col];
+        }
+      }
+      output[(pixel*m*k) + col] = sum + bias[col];
     }
 
     return;
@@ -205,28 +217,34 @@ torch::Tensor linear_forward(
 ) {
 
   int l = inputs.size();//number of input tensors
-  int m;//batch size
-  int w = 0;//width or height of feature maps
-  int n = 0;//number of features
+  int m = 0;//pixel
+  int n = 0;//feature
+  //int w = 0;//width or height of feature maps
+  
+  std::vector<int> pixel_counts;//number of pixels per layer
+  pixel_counts.reserve(l);
+  std::vector<int> feature_counts;//number of features per layer
+  feature_counts.reserve(l);
   std::vector<const float*> input_ptrs;
   input_ptrs.reserve(l);
   for (const auto& input : inputs) {
-    m = input.size(0);
-    w = std::max(w, int(input.size(1)));
-    n += input.size(3);
+    m = std::max(m, int(input.size(0)));//input.size(0);
+    //w = std::max(w, int(input.size(1)));
+    n += input.size(1);
+
+    pixel_counts.push_back(input.size(0));
+    feature_counts.push_back(input.size(1));
     input_ptrs.push_back(input.data_ptr<float>());
   }
 
 	auto options = torch::TensorOptions().device(torch::kCUDA, 0);
-	auto output = torch::zeros({m, w * w, k}, options);
+	auto output = torch::zeros({m, k}, options);
 
 	unsigned int block_size = 32;
-	unsigned int grid_rows = (m + block_size - 1) / block_size;
+	unsigned int grid_pixels = (m + block_size - 1) / block_size;
 	unsigned int grid_cols = (k + block_size - 1) / block_size;
-  
-  unsigned int grid_images = (w * w + block_size - 1) / block_size;
 
-	dim3 dimGrid(grid_cols, grid_rows, grid_images);
+	dim3 dimGrid(grid_cols, grid_pixels);
 	dim3 dimBlock(block_size, block_size);
 
   // Linear layers have a vector input. But to re-use the matmul kernel,
@@ -238,7 +256,7 @@ torch::Tensor linear_forward(
 		weight.data_ptr<float>(),
 		bias.data_ptr<float>(),
 		output.data_ptr<float>(),
-		l, m, w*w, n, k, 1 // Pass in b=1 since there is no z-dimension for linear layers
+		l, m, n, pixel_counts.data(), feature_counts.data(), k, 1 // Pass in b=1 since there is no z-dimension for linear layers
 	);
 
   cudaDeviceSynchronize();
