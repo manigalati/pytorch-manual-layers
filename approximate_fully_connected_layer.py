@@ -18,9 +18,9 @@ class linear_appx(torch.autograd.Function):
 
             # Must flatten the weights so CUDA sees them sequentially.
             weight = torch.transpose(weight, 0, 1).flatten()
-            out = cuda_layers.linear_forward(X, weight, bias, k)#m, n, k)
+            out = cuda_layers.linear_forward([x.reshape(-1, x.shape[-1]) for x in X], weight, bias, k)#m, n, k)
 
-            return out
+            return out.reshape(-1, max([x.shape[1] for x in X]), max([x.shape[2] for x in X]), k)
         else:
             return cpp_layers.linear_forward(X, weight, bias)
 
