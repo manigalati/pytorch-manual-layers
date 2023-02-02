@@ -1,7 +1,7 @@
 import torch
 import torch.nn as nn
 import cuda_layers
-import cpp_layers
+#import cpp_layers
 import pdb
 
 import math
@@ -18,7 +18,7 @@ class linear_appx(torch.autograd.Function):
 
             # Must flatten the weights so CUDA sees them sequentially.
             weight = torch.transpose(weight, 0, 1).flatten()
-            out = cuda_layers.linear_forward([x.reshape(-1, x.shape[-1]) for x in X], weight, bias, k)#m, n, k)
+            out = cuda_layers.linear_forward(X, weight, bias, k)#m, n, k)
 
             return out.reshape(-1, max([x.shape[1] for x in X]), max([x.shape[2] for x in X]), k)
         else:
@@ -37,13 +37,17 @@ class linear_appx(torch.autograd.Function):
 
     @staticmethod
     def backward(ctx, grad_output):
-        input, weight, bias = ctx.saved_tensors
+        (*inputs), weight, bias = ctx.saved_tensors
         grad_input = grad_weight = grad_bias = None
 
         if ctx.needs_input_grad[0]:
             grad_input = grad_output.mm(weight)
         if ctx.needs_input_grad[1]:
-            grad_weight = grad_output.t().mm(input)
+            grad_weight = []
+            for input in inputs:
+                grad_output_down = torch.nn.Upsample(size = input.shape[1:3])(grad_output.permute(0, 3, 1, 2)).permute(0, 2, 3, 1)  
+                grad_weight += [grad_output_down.reshape(-1, grad_output_down.shape[-1]).t().mm(input.reshape(-1, input.shape[-1]))]
+            grad_weight = torch.cat(grad_weight, dim=-1)
         if ctx.needs_input_grad[2]:
             grad_bias = grad_output.sum(0)
 
