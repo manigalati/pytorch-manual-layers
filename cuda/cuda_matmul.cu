@@ -58,10 +58,11 @@ __global__ void my_matmul_cuda(
 	const float *bias,
   float *output,
   const int l,
-  const int m,
+  const int b,
+  const int w,
   const int n,
-  const int *pixel_counts,
-  const int *feature_counts,
+  int *pixel_counts,
+  int *feature_counts,
   const int k,
   const int batch_size)
 {
@@ -75,15 +76,32 @@ __global__ void my_matmul_cuda(
     //int img = blockIdx.z * blockDim.z + threadIdx.z;
     int pixel = blockIdx.y * blockDim.y + threadIdx.y;
     int col = blockIdx.x * blockDim.x + threadIdx.x;
+    int m = b * w * w;
 
     float sum = 0.0f, product_appx = 0.0f, product = 0.0f;
+    int feature_counter = 0;
     if(col < k && pixel < m){
       for(int i=0; i<l; i++){
         for(int j = 0; j < feature_counts[i]; j++){
-          sum += image[i][((pixel*pixel_counts[i]/m) * pixel_counts[i] * feature_counts[i]) + j] * weight[j * k + col];
+          if(w == pixel_counts[i]){
+            sum += image[i][pixel * feature_counts[i] + j] * weight[feature_counter * k + col];
+          }else{
+            //int actual_pixel = pixel * pixel_counts[i];
+            //actual_pixel = actual_pixel / m;
+
+            int actual_pixel = pixel / w;
+            actual_pixel *= pixel_counts[i];
+            actual_pixel /= w;
+            actual_pixel *= pixel_counts[i];
+            actual_pixel += (pixel % w * pixel_counts[i]) / w;
+
+            sum += image[i][actual_pixel * feature_counts[i] + j] * weight[feature_counter * k + col];
+          }
+          feature_counter++;
         }
       }
-      output[(pixel*m*k) + col] = sum + bias[col];
+
+      output[pixel * k + col] = bias[col] + sum;
     }
 
     return;
@@ -205,6 +223,15 @@ torch::Tensor old_linear_forward(
   return output;
 }
 
+
+
+
+void myPrint(const float *tensor){
+  std::cout << std::to_string(tensor[0]) << "\n";
+}
+
+
+
 //My new linear forward!
 
 torch::Tensor linear_forward(
@@ -212,14 +239,16 @@ torch::Tensor linear_forward(
   torch::Tensor weight,
   torch::Tensor bias,
 	//int m,//batch size
-	//int n,//number of features
-	int k//output shape
+	//int n,//input features
+	int k//output features
 ) {
+  //myPrint(bias.data_ptr<float>());
+  //return inputs[1];
 
   int l = inputs.size();//number of input tensors
-  int m = 0;//pixel
-  int n = 0;//feature
-  //int w = 0;//width or height of feature maps
+  int b;//batch size
+  int w = 0;//width
+  int n = 0;//input features
   
   std::vector<int> pixel_counts;//number of pixels per layer
   pixel_counts.reserve(l);
@@ -228,14 +257,21 @@ torch::Tensor linear_forward(
   std::vector<const float*> input_ptrs;
   input_ptrs.reserve(l);
   for (const auto& input : inputs) {
-    m = std::max(m, int(input.size(0)));//input.size(0);
-    //w = std::max(w, int(input.size(1)));
-    n += input.size(1);
+    b = input.size(0);
+    w = std::max(w, int(input.size(1)));
+    n += input.size(3);
 
-    pixel_counts.push_back(input.size(0));
-    feature_counts.push_back(input.size(1));
-    input_ptrs.push_back(input.data_ptr<float>());
+    pixel_counts.push_back(input.size(1));
+    feature_counts.push_back(input.size(3));
+    input_ptrs.push_back(input.reshape({-1, input.size(3)}).data_ptr<float>());
   }
+  int m = b * w * w;
+
+  //std::cout << std::to_string(pixel_counts[0]) << "\n";
+  //std::cout << std::to_string(pixel_counts[1]) << "\n";
+  //std::cout << std::to_string(feature_counts[0]) << "\n";
+  //std::cout << std::to_string(feature_counts[1]) << "\n";
+  //std::cout << std::to_string(m) << "\n";
 
 	auto options = torch::TensorOptions().device(torch::kCUDA, 0);
 	auto output = torch::zeros({m, k}, options);
@@ -251,13 +287,31 @@ torch::Tensor linear_forward(
   // just pass in a 'batch' of inputs as an m X n matrix, to be multiplied
   // by the n x k weights, to get 'm' output images.
 
+  int* pixel_counts_gpu;
+  int* feature_counts_gpu;
+  
+  cudaMalloc((void**)&pixel_counts_gpu, l * sizeof(int));
+  cudaMalloc((void**)&feature_counts_gpu, l * sizeof(int));
+
+  cudaMemcpy(pixel_counts_gpu, pixel_counts.data(), l * sizeof(int), cudaMemcpyHostToDevice);
+  cudaMemcpy(feature_counts_gpu, feature_counts.data(), l * sizeof(int), cudaMemcpyHostToDevice);
+
+  const float** input_ptrs_gpu;
+  cudaMalloc((void**)&input_ptrs_gpu, l * sizeof(float*));
+  cudaMemcpy(input_ptrs_gpu, input_ptrs.data(), l * sizeof(float*), cudaMemcpyHostToDevice);
+
+
 	my_matmul_cuda<<<dimGrid, dimBlock>>>(
-		input_ptrs.data(),//input.data_ptr<float>(),
+		input_ptrs_gpu,//inputs[1].data_ptr<float>(),//input_ptrs.data(),//input.data_ptr<float>(),
 		weight.data_ptr<float>(),
 		bias.data_ptr<float>(),
 		output.data_ptr<float>(),
-		l, m, n, pixel_counts.data(), feature_counts.data(), k, 1 // Pass in b=1 since there is no z-dimension for linear layers
+		l, b, w, n, pixel_counts_gpu, feature_counts_gpu, k, 1 // Pass in b=1 since there is no z-dimension for linear layers
 	);
+
+  cudaFree(pixel_counts_gpu);
+  cudaFree(feature_counts_gpu);
+  cudaFree(input_ptrs_gpu);
 
   cudaDeviceSynchronize();
   return output;
