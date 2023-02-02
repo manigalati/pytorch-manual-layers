@@ -1,7 +1,8 @@
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 import cuda_layers
-#import cpp_layers
+import cpp_layers
 import pdb
 
 import math
@@ -45,7 +46,8 @@ class linear_appx(torch.autograd.Function):
         if ctx.needs_input_grad[1]:
             grad_weight = []
             for input in inputs:
-                grad_output_down = torch.nn.Upsample(size = input.shape[1:3])(grad_output.permute(0, 3, 1, 2)).permute(0, 2, 3, 1)  
+                #grad_output_down = F.interpolate(grad_output.permute(0, 3, 1, 2), size = input.shape[1:3], mode="nearest").permute(0, 2, 3, 1)
+                grad_output_down = F.max_pool2d(grad_output.permute(0, 3, 1, 2), kernel_size=grad_output.shape[1]//input.shape[1], stride=grad_output.shape[1]//input.shape[1], padding=0).permute(0, 2, 3, 1)
                 grad_weight += [grad_output_down.reshape(-1, grad_output_down.shape[-1]).t().mm(input.reshape(-1, input.shape[-1]))]
             grad_weight = torch.cat(grad_weight, dim=-1)
         if ctx.needs_input_grad[2]:
